@@ -1,6 +1,5 @@
 package com.flowxperts.reflexledcontrol
 
-import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -34,17 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.edit
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import java.io.InputStream
-import java.io.OutputStream
-import java.net.InetSocketAddress
-import java.net.Socket
-
-const val LANBOX_PORT = 777
-const val LAYER_A = "01"
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 // Modern Color Palette
 val PrimaryGold = Color(0xFFD4AF37)
@@ -52,144 +41,9 @@ val DarkGrey = Color(0xFF121212)
 val SurfaceGrey = Color(0xFF1E1E1E)
 val AccentGold = Color(0xFFFFD700)
 
-class LanBoxViewModel(application: Application) : AndroidViewModel(application) {
-    private val res = application.resources
-    var connectionStatus by mutableStateOf(res.getString(R.string.status_disconnected))
-    var isConnected by mutableStateOf(false)
-    var isConnecting by mutableStateOf(false)
-
-    var availableCueLists by mutableStateOf<List<String>>(emptyList())
-    var currentSpeed by mutableFloatStateOf(127f)
-
-    private var socket: Socket? = null
-    private var outStream: OutputStream? = null
-    private var inStream: InputStream? = null
-
-    fun connect(ip: String, password: String) {
-        if (isConnecting) return
-
-        viewModelScope.launch(Dispatchers.IO) {
-            isConnecting = true
-            connectionStatus = res.getString(R.string.status_connecting, ip)
-
-            try {
-                closeConnection()
-                val newSocket = Socket()
-                newSocket.connect(InetSocketAddress(ip, LANBOX_PORT), 10000)
-
-                outStream = newSocket.getOutputStream()
-                inStream = newSocket.getInputStream()
-
-                outStream?.write("$password\r".toByteArray(Charsets.US_ASCII))
-                outStream?.flush()
-
-                socket = newSocket
-                connectionStatus = res.getString(R.string.status_connected, ip)
-                isConnected = true
-
-                sendCommand("65FF")
-                startReadLoop()
-                sendCommand("A70001")
-
-            } catch (e: Exception) {
-                closeConnection()
-                connectionStatus = res.getString(R.string.status_failed, e.localizedMessage ?: "")
-            } finally {
-                isConnecting = false
-            }
-        }
-    }
-
-    private fun startReadLoop() {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                var buffer = ""
-                var char: Int
-                while (inStream?.read().also { char = it ?: -1 } != -1) {
-                    val c = char.toChar()
-                    if (c == '*') {
-                        buffer = ""
-                    } else if (c == '#') {
-                        processLanBoxMessage(buffer.trim())
-                    } else if (c != '>') {
-                        buffer += c
-                    }
-                }
-            } catch (e: Exception) {
-                if (socket?.isClosed != true) {
-                    closeConnection()
-                    connectionStatus = res.getString(R.string.status_read_error)
-                }
-            }
-        }
-    }
-
-    private fun processLanBoxMessage(message: String) {
-        val cleanMsg = message.replace(" ", "")
-        if (cleanMsg.length % 6 == 0 && cleanMsg.matches(Regex("[0-9A-Fa-f]+"))) {
-            val lists = mutableListOf<String>()
-            for (i in 0 until cleanMsg.length step 6) {
-                val cueHex = cleanMsg.substring(i, i + 4)
-                val cueDec = cueHex.toIntOrNull(16)
-                if (cueDec != null) {
-                    lists.add(cueDec.toString())
-                }
-            }
-            if (lists.isNotEmpty()) {
-                availableCueLists = lists
-            }
-        }
-    }
-
-    fun setSpeed(speed: Float) {
-        currentSpeed = speed
-        val speedHex = speed.toInt().toString(16).padStart(2, '0').uppercase()
-        sendCommand("4C${LAYER_A}$speedHex")
-    }
-
-    fun goCueList(cueListDec: String) {
-        val cueHex = cueListDec.toIntOrNull()?.toString(16)?.padStart(4, '0')?.uppercase() ?: return
-        sendCommand("56${LAYER_A}$cueHex")
-    }
-
-    fun sendCommand(commandHex: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                outStream?.apply {
-                    write("*$commandHex#".toByteArray(Charsets.US_ASCII))
-                    flush()
-                } ?: throw IllegalStateException("Socket not connected")
-            } catch (e: Exception) {
-                closeConnection()
-                connectionStatus = res.getString(R.string.status_send_error)
-            }
-        }
-    }
-
-    private fun closeConnection() {
-        isConnected = false
-        try {
-            inStream?.close()
-            outStream?.close()
-            socket?.close()
-        } catch (_: Exception) {}
-        finally {
-            inStream = null
-            outStream = null
-            socket = null
-        }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        closeConnection()
-    }
-}
-
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val viewModel = LanBoxViewModel(application)
         setContent {
             val customColorScheme = darkColorScheme(
                 primary = PrimaryGold,
@@ -199,7 +53,7 @@ class MainActivity : ComponentActivity() {
                 secondary = AccentGold
             )
             MaterialTheme(colorScheme = customColorScheme) {
-                LanBoxAppScreen(viewModel)
+                LanBoxAppScreen()
             }
         }
     }
@@ -207,7 +61,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LanBoxAppScreen(viewModel: LanBoxViewModel) {
+fun LanBoxAppScreen(viewModel: LanBoxViewModel = viewModel()) {
     val context = LocalContext.current
     val sharedPrefs = context.getSharedPreferences("LanBoxPrefs", Context.MODE_PRIVATE)
 
