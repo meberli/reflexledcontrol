@@ -1,19 +1,40 @@
-package com.example.reflexledcontrol
+package com.flowxperts.reflexledcontrol
 
+import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.ViewModel
+import androidx.compose.ui.unit.sp
+import androidx.core.content.edit
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -25,13 +46,20 @@ import java.net.Socket
 const val LANBOX_PORT = 777
 const val LAYER_A = "01"
 
-class LanBoxViewModel : ViewModel() {
-    var connectionStatus by mutableStateOf("Disconnected")
+// Modern Color Palette
+val PrimaryGold = Color(0xFFD4AF37)
+val DarkGrey = Color(0xFF121212)
+val SurfaceGrey = Color(0xFF1E1E1E)
+val AccentGold = Color(0xFFFFD700)
+
+class LanBoxViewModel(application: Application) : AndroidViewModel(application) {
+    private val res = application.resources
+    var connectionStatus by mutableStateOf(res.getString(R.string.status_disconnected))
+    var isConnected by mutableStateOf(false)
     var isConnecting by mutableStateOf(false)
 
-    // UI States for the new features
     var availableCueLists by mutableStateOf<List<String>>(emptyList())
-    var currentSpeed by mutableStateOf(127f) // Default 100% speed
+    var currentSpeed by mutableFloatStateOf(127f)
 
     private var socket: Socket? = null
     private var outStream: OutputStream? = null
@@ -42,7 +70,7 @@ class LanBoxViewModel : ViewModel() {
 
         viewModelScope.launch(Dispatchers.IO) {
             isConnecting = true
-            connectionStatus = "Connecting to $ip..."
+            connectionStatus = res.getString(R.string.status_connecting, ip)
 
             try {
                 closeConnection()
@@ -52,25 +80,20 @@ class LanBoxViewModel : ViewModel() {
                 outStream = newSocket.getOutputStream()
                 inStream = newSocket.getInputStream()
 
-                // 1. Authenticate with password and carriage return
                 outStream?.write("$password\r".toByteArray(Charsets.US_ASCII))
                 outStream?.flush()
 
                 socket = newSocket
-                connectionStatus = "Connected to $ip"
+                connectionStatus = res.getString(R.string.status_connected, ip)
+                isConnected = true
 
-                // 2. Initialize 16-bit mode to unlock full LCX memory
                 sendCommand("65FF")
-
-                // 3. Start the continuous read loop to parse LanBox replies
                 startReadLoop()
-
-                // 4. Request Cue List Directory (Start at index 1)
                 sendCommand("A70001")
 
             } catch (e: Exception) {
                 closeConnection()
-                connectionStatus = "Connection Failed: ${e.localizedMessage}"
+                connectionStatus = res.getString(R.string.status_failed, e.localizedMessage ?: "")
             } finally {
                 isConnecting = false
             }
@@ -82,14 +105,11 @@ class LanBoxViewModel : ViewModel() {
             try {
                 var buffer = ""
                 var char: Int
-
-                // Read byte-by-byte from the incoming stream
                 while (inStream?.read().also { char = it ?: -1 } != -1) {
                     val c = char.toChar()
                     if (c == '*') {
-                        buffer = "" // Start of new LanBox message
+                        buffer = ""
                     } else if (c == '#') {
-                        // End of message, process the payload
                         processLanBoxMessage(buffer.trim())
                     } else if (c != '>') {
                         buffer += c
@@ -97,8 +117,8 @@ class LanBoxViewModel : ViewModel() {
                 }
             } catch (e: Exception) {
                 if (socket?.isClosed != true) {
-                    connectionStatus = "Disconnected (Read Error)"
                     closeConnection()
+                    connectionStatus = res.getString(R.string.status_read_error)
                 }
             }
         }
@@ -106,9 +126,6 @@ class LanBoxViewModel : ViewModel() {
 
     private fun processLanBoxMessage(message: String) {
         val cleanMsg = message.replace(" ", "")
-
-        // Parse the A7 CueListGetDirectory reply.
-        // It returns chunks of 6 hex chars: 4 for the Cue ID, 2 for the Step Count.
         if (cleanMsg.length % 6 == 0 && cleanMsg.matches(Regex("[0-9A-Fa-f]+"))) {
             val lists = mutableListOf<String>()
             for (i in 0 until cleanMsg.length step 6) {
@@ -119,20 +136,17 @@ class LanBoxViewModel : ViewModel() {
                 }
             }
             if (lists.isNotEmpty()) {
-                // Update UI state
                 availableCueLists = lists
             }
         }
     }
 
-    // Controls the Layer Chase Speed (0 = 50%, 127 = 100%, 255 = Infinite)
     fun setSpeed(speed: Float) {
         currentSpeed = speed
         val speedHex = speed.toInt().toString(16).padStart(2, '0').uppercase()
         sendCommand("4C${LAYER_A}$speedHex")
     }
 
-    // Starts a specific Cue List in Layer A
     fun goCueList(cueListDec: String) {
         val cueHex = cueListDec.toIntOrNull()?.toString(16)?.padStart(4, '0')?.uppercase() ?: return
         sendCommand("56${LAYER_A}$cueHex")
@@ -146,18 +160,19 @@ class LanBoxViewModel : ViewModel() {
                     flush()
                 } ?: throw IllegalStateException("Socket not connected")
             } catch (e: Exception) {
-                connectionStatus = "Send Error: Please reconnect."
                 closeConnection()
+                connectionStatus = res.getString(R.string.status_send_error)
             }
         }
     }
 
     private fun closeConnection() {
+        isConnected = false
         try {
             inStream?.close()
             outStream?.close()
             socket?.close()
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
         finally {
             inStream = null
             outStream = null
@@ -174,10 +189,16 @@ class LanBoxViewModel : ViewModel() {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val viewModel = LanBoxViewModel()
-
+        val viewModel = LanBoxViewModel(application)
         setContent {
-            MaterialTheme {
+            val customColorScheme = darkColorScheme(
+                primary = PrimaryGold,
+                onPrimary = Color.Black,
+                surface = SurfaceGrey,
+                background = DarkGrey,
+                secondary = AccentGold
+            )
+            MaterialTheme(colorScheme = customColorScheme) {
                 LanBoxAppScreen(viewModel)
             }
         }
@@ -190,176 +211,374 @@ fun LanBoxAppScreen(viewModel: LanBoxViewModel) {
     val context = LocalContext.current
     val sharedPrefs = context.getSharedPreferences("LanBoxPrefs", Context.MODE_PRIVATE)
 
-    var ipAddress by remember { mutableStateOf(sharedPrefs.getString("IP", "192.168.1.77") ?: "192.168.1.77") }
-    var password by remember { mutableStateOf(sharedPrefs.getString("PASS", "777") ?: "777") }
+    val defaultIp = stringResource(R.string.default_ip)
+    val defaultPass = stringResource(R.string.default_pass)
 
+    var ipAddress by remember { mutableStateOf(sharedPrefs.getString("IP", defaultIp) ?: defaultIp) }
+    var password by remember { mutableStateOf(sharedPrefs.getString("PASS", defaultPass) ?: defaultPass) }
     var showSettingsDialog by remember { mutableStateOf(false) }
 
-    // Re-run connection anytime the IP or password successfully updates
     LaunchedEffect(ipAddress, password) {
         viewModel.connect(ipAddress, password)
     }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(text = "LanBox Remote") },
-                actions = {
-                    IconButton(onClick = { showSettingsDialog = true }) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
+            CenterAlignedTopAppBar(
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background
+                ),
+                title = {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.img),
+                            contentDescription = "Header Logo",
+                            modifier = Modifier
+                                .fillMaxWidth(0.9f)
+                                .height(32.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                        Text(
+                            text = stringResource(R.string.app_title).uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 2.sp,
+                            fontWeight = FontWeight.Light
+                        )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                )
+                actions = {
+                    IconButton(onClick = { 
+                        context.startActivity(Intent(context, CueListEditorActivity::class.java))
+                    }) {
+                        Icon(
+                            Icons.Rounded.Edit,
+                            contentDescription = "Edit Cue List",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    IconButton(onClick = { showSettingsDialog = true }) {
+                        Icon(
+                            Icons.Rounded.Settings,
+                            contentDescription = stringResource(R.string.settings_description),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             )
         }
     ) { paddingValues ->
         Column(
             modifier = Modifier
                 .padding(paddingValues)
-                .padding(16.dp)
-                .fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            if (viewModel.isConnecting) {
-                CircularProgressIndicator(modifier = Modifier.padding(8.dp))
-            } else {
-                Spacer(modifier = Modifier.height(56.dp))
-            }
-
-            val statusColor = if (viewModel.connectionStatus.startsWith("Connected")) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.error
-            }
-
-            Text(
-                text = viewModel.connectionStatus,
-                color = statusColor,
-                style = MaterialTheme.typography.bodyLarge
-            )
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            // --- CUE LIST SELECTOR ---
-            var expanded by remember { mutableStateOf(false) }
-            var selectedCue by remember { mutableStateOf("Select Cue List") }
-
-            ExposedDropdownMenuBox(
-                expanded = expanded,
-                onExpandedChange = { expanded = !expanded }
-            ) {
-                OutlinedTextField(
-                    value = selectedCue,
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Available Cue Lists") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                    modifier = Modifier.menuAnchor().fillMaxWidth()
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(MaterialTheme.colorScheme.background, Color.Black)
+                    )
                 )
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
+        ) {
+            // --- CONNECTION STATUS ---
+            StatusBanner(viewModel)
 
-                ExposedDropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false }
-                ) {
-                    if (viewModel.availableCueLists.isEmpty()) {
-                        DropdownMenuItem(text = { Text("No Cue Lists Found") }, onClick = { expanded = false })
-                    } else {
-                        viewModel.availableCueLists.forEach { cue ->
-                            DropdownMenuItem(
-                                text = { Text("Cue List $cue") },
-                                onClick = {
-                                    selectedCue = "Cue List $cue"
-                                    expanded = false
-                                    viewModel.goCueList(cue)
-                                }
-                            )
-                        }
-                    }
-                }
-            }
+            // --- SEQUENCE CONTROL CARD ---
+            SequenceCard(viewModel)
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // --- SPEED SLIDER ---
-            Text(text = "Chase Speed: ${(viewModel.currentSpeed / 127f * 100).toInt()}%")
-            Slider(
-                value = viewModel.currentSpeed,
-                onValueChange = { viewModel.setSpeed(it) },
-                valueRange = 0f..255f, // 0 = 50%, 127 = 100%, 255 = Infinite
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            PlaybackButton("⏸ Pause") { viewModel.sendCommand("58${LAYER_A}") }
-            PlaybackButton("⏵ Resume") { viewModel.sendCommand("59${LAYER_A}") }
-            PlaybackButton("⏭ Next Step") { viewModel.sendCommand("5A${LAYER_A}") }
-            PlaybackButton("⏮ Prev Step") { viewModel.sendCommand("5B${LAYER_A}") }
-            PlaybackButton("⏹ Clear Layer") { viewModel.sendCommand("57${LAYER_A}") }
+            // --- PLAYBACK CONTROLS ---
+            PlaybackSection(viewModel)
         }
     }
 
     if (showSettingsDialog) {
-        var tempIp by remember { mutableStateOf(ipAddress) }
-        var tempPass by remember { mutableStateOf(password) }
-
-        AlertDialog(
-            onDismissRequest = { showSettingsDialog = false },
-            title = { Text(text = "Network Settings") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = tempIp,
-                        onValueChange = { tempIp = it },
-                        label = { Text(text = "LanBox IP Address") },
-                        singleLine = true
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = tempPass,
-                        onValueChange = { tempPass = it },
-                        label = { Text(text = "Password") },
-                        singleLine = true
-                    )
+        SettingsDialog(
+            ip = ipAddress,
+            pass = password,
+            onDismiss = { showSettingsDialog = false },
+            onSave = { newIp, newPass ->
+                sharedPrefs.edit {
+                    putString("IP", newIp)
+                    putString("PASS", newPass)
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        sharedPrefs.edit()
-                            .putString("IP", tempIp)
-                            .putString("PASS", tempPass)
-                            .apply()
-
-                        ipAddress = tempIp
-                        password = tempPass
-                        showSettingsDialog = false
-                    }
-                ) {
-                    Text(text = "Save & Reconnect")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSettingsDialog = false }) {
-                    Text(text = "Cancel")
-                }
+                ipAddress = newIp
+                password = newPass
+                showSettingsDialog = false
             }
         )
     }
 }
 
 @Composable
-fun PlaybackButton(buttonText: String, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
+fun StatusBanner(viewModel: LanBoxViewModel) {
+    val statusColor by animateColorAsState(
+        targetValue = when {
+            viewModel.isConnecting -> Color.Gray
+            viewModel.isConnected -> MaterialTheme.colorScheme.primary
+            else -> MaterialTheme.colorScheme.error
+        },
+        animationSpec = tween(500), label = ""
+    )
+
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .height(56.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = buttonText, style = MaterialTheme.typography.titleMedium)
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .clip(CircleShape)
+                .background(statusColor)
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = viewModel.connectionStatus,
+            style = MaterialTheme.typography.labelLarge,
+            color = Color.White.copy(alpha = 0.8f)
+        )
+        Spacer(Modifier.weight(1f))
+        if (viewModel.isConnecting) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = statusColor)
+        } else {
+            Icon(
+                imageVector = if (viewModel.isConnected) Icons.Rounded.Wifi else Icons.Rounded.WifiOff,
+                contentDescription = null,
+                tint = statusColor.copy(alpha = 0.6f),
+                modifier = Modifier.size(18.dp)
+            )
+        }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SequenceCard(viewModel: LanBoxViewModel) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionHeader(stringResource(R.string.label_sequence), Icons.AutoMirrored.Rounded.FormatListBulleted)
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                var expanded by remember { mutableStateOf(false) }
+                val selectCueListStr = stringResource(R.string.select_cue_list)
+                var selectedCue by remember { mutableStateOf(selectCueListStr) }
+
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = { expanded = !expanded }
+                ) {
+                    OutlinedTextField(
+                        value = selectedCue,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text(stringResource(R.string.available_cue_lists)) },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                        modifier = Modifier
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                            .fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.1f)
+                        )
+                    )
+
+                    ExposedDropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false },
+                        modifier = Modifier.background(MaterialTheme.colorScheme.surface)
+                    ) {
+                        if (viewModel.availableCueLists.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.no_cue_lists_found)) },
+                                onClick = { expanded = false }
+                            )
+                        } else {
+                            viewModel.availableCueLists.forEach { cue ->
+                                val cueListItemStr = stringResource(R.string.cue_list_item, cue)
+                                DropdownMenuItem(
+                                    text = { Text(cueListItemStr) },
+                                    onClick = {
+                                        selectedCue = cueListItemStr
+                                        expanded = false
+                                        viewModel.goCueList(cue)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                val speedPercent = (viewModel.currentSpeed / 255f * 100).toInt()
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Speed Control",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White.copy(alpha = 0.6f)
+                        )
+                        Text(
+                            text = "$speedPercent%",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Slider(
+                        value = viewModel.currentSpeed,
+                        onValueChange = { viewModel.setSpeed(it) },
+                        valueRange = 0f..255f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.1f)
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SectionHeader(title: String, icon: ImageVector) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = title.uppercase(),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            color = Color.White.copy(alpha = 0.9f)
+        )
+    }
+}
+
+@Composable
+fun PlaybackSection(viewModel: LanBoxViewModel) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionHeader(stringResource(R.string.label_playback), Icons.Rounded.PlayCircleOutline)
+
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.heightIn(max = 240.dp)
+        ) {
+            item { PlaybackBtn(Icons.Rounded.Pause, stringResource(R.string.btn_pause), MaterialTheme.colorScheme.surface) { viewModel.sendCommand("58$LAYER_A") } }
+            item { PlaybackBtn(Icons.Rounded.PlayArrow, stringResource(R.string.btn_resume), MaterialTheme.colorScheme.primary) { viewModel.sendCommand("59$LAYER_A") } }
+            item { PlaybackBtn(Icons.Rounded.SkipPrevious, stringResource(R.string.btn_prev_step), MaterialTheme.colorScheme.surface) { viewModel.sendCommand("5B$LAYER_A") } }
+            item { PlaybackBtn(Icons.Rounded.SkipNext, stringResource(R.string.btn_next_step), MaterialTheme.colorScheme.surface) { viewModel.sendCommand("5A$LAYER_A") } }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Button(
+            onClick = { viewModel.sendCommand("57$LAYER_A") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF442222),
+                contentColor = Color(0xFFFF8888)
+            ),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Rounded.LayersClear, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(stringResource(R.string.btn_clear_layer).uppercase(), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+        }
+    }
+}
+
+@Composable
+fun PlaybackBtn(icon: ImageVector, label: String, containerColor: Color, onClick: () -> Unit) {
+    val contentColor = if (containerColor == MaterialTheme.colorScheme.primary) Color.Black else Color.White
+
+    FilledTonalButton(
+        onClick = onClick,
+        modifier = Modifier.height(100.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = containerColor,
+            contentColor = contentColor
+        ),
+        elevation = ButtonDefaults.filledTonalButtonElevation(defaultElevation = 4.dp)
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(32.dp))
+            Spacer(Modifier.height(4.dp))
+            Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+fun SettingsDialog(ip: String, pass: String, onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
+    var tempIp by remember { mutableStateOf(ip) }
+    var tempPass by remember { mutableStateOf(pass) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SurfaceGrey,
+        title = { Text(text = stringResource(R.string.settings_title), color = PrimaryGold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = tempIp,
+                    onValueChange = { tempIp = it },
+                    label = { Text(text = stringResource(R.string.ip_address_label)) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = PrimaryGold)
+                )
+                OutlinedTextField(
+                    value = tempPass,
+                    onValueChange = { tempPass = it },
+                    label = { Text(text = stringResource(R.string.password_label)) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = PrimaryGold)
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(tempIp, tempPass) },
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = Color.Black)
+            ) {
+                Text(text = stringResource(R.string.btn_save_reconnect))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.btn_cancel), color = Color.White.copy(alpha = 0.6f))
+            }
+        }
+    )
 }

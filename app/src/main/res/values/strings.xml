@@ -1,3 +1,31 @@
 <resources>
     <string name="app_name">reflex led control</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_connecting">Connecting to %s...</string>
+    <string name="status_connected">Connected to %s</string>
+    <string name="status_failed">Connection Failed: %s</string>
+    <string name="status_read_error">Disconnected (Read Error)</string>
+    <string name="status_send_error">Send Error: Please reconnect.</string>
+    <string name="default_ip">192.168.1.77</string>
+    <string name="default_pass">777</string>
+    <string name="app_title">Reflex LED Control</string>
+    <string name="settings_description">Settings</string>
+    <string name="select_cue_list">Select Cue List</string>
+    <string name="available_cue_lists">Available Cue Lists</string>
+    <string name="no_cue_lists_found">No Cue Lists Found</string>
+    <string name="cue_list_item">Cue List %s</string>
+    <string name="chase_speed_label">Chase Speed: %d%%</string>
+    <string name="btn_pause">Pause</string>
+    <string name="btn_resume">Resume</string>
+    <string name="btn_next_step">Next Step</string>
+    <string name="btn_prev_step">Prev Step</string>
+    <string name="btn_clear_layer">Clear Layer</string>
+    <string name="settings_title">Network Settings</string>
+    <string name="ip_address_label">LanBox IP Address</string>
+    <string name="password_label">Password</string>
+    <string name="btn_save_reconnect">Save &amp; Reconnect</string>
+    <string name="btn_cancel">Cancel</string>
+    <string name="label_connection">Connection Status</string>
+    <string name="label_sequence">Sequence Control</string>
+    <string name="label_playback">Playback</string>
 </resources>
