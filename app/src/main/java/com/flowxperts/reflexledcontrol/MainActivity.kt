@@ -3,6 +3,7 @@ package com.flowxperts.reflexledcontrol
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.animateColorAsState
@@ -10,12 +11,17 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -29,17 +35,19 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.core.content.edit
 import androidx.lifecycle.viewmodel.compose.viewModel
-
-// Modern Color Palette
-val PrimaryGold = Color(0xFFD4AF37)
-val DarkGrey = Color(0xFF121212)
-val SurfaceGrey = Color(0xFF1E1E1E)
-val AccentGold = Color(0xFFFFD700)
+import com.flowxperts.reflexledcontrol.ui.theme.AccentGold
+import com.flowxperts.reflexledcontrol.ui.theme.DarkGrey
+import com.flowxperts.reflexledcontrol.ui.theme.PrimaryGold
+import com.flowxperts.reflexledcontrol.ui.theme.SurfaceGrey
+import java.io.File
+import java.io.FileOutputStream
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -59,6 +67,32 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+fun openManual(context: Context) {
+    try {
+        val fileName = "lanbox_reference.pdf"
+        val fileDir = File(context.cacheDir, "pdfs")
+        fileDir.mkdirs()
+        val pdfFile = File(fileDir, fileName)
+        
+        if (!pdfFile.exists()) {
+            context.assets.open(fileName).use { inputStream ->
+                FileOutputStream(pdfFile).use { outputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+            }
+        }
+        
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", pdfFile)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/pdf")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "Open Manual"))
+    } catch (e: Exception) {
+        Toast.makeText(context, "Error opening manual: ${e.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LanBoxAppScreen(viewModel: LanBoxViewModel = viewModel()) {
@@ -68,9 +102,17 @@ fun LanBoxAppScreen(viewModel: LanBoxViewModel = viewModel()) {
     val defaultIp = stringResource(R.string.default_ip)
     val defaultPass = stringResource(R.string.default_pass)
 
-    var ipAddress by remember { mutableStateOf(sharedPrefs.getString("IP", defaultIp) ?: defaultIp) }
-    var password by remember { mutableStateOf(sharedPrefs.getString("PASS", defaultPass) ?: defaultPass) }
+    // Using values directly from shared preferences inside the composable prevents stale state
+    val ipAddress = sharedPrefs.getString("IP", defaultIp) ?: defaultIp
+    val password = sharedPrefs.getString("PASS", defaultPass) ?: defaultPass
+    
+    val numLeds = sharedPrefs.getInt("NUM_LEDS", 10)
+    val startChannel = sharedPrefs.getInt("START_CHANNEL", 1)
+    val channelGap = sharedPrefs.getInt("CHANNEL_GAP", 0)
+    val customMapping = sharedPrefs.getString("CUSTOM_MAPPING", "") ?: ""
+    
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var showLogDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(ipAddress, password) {
         viewModel.connect(ipAddress, password)
@@ -91,7 +133,7 @@ fun LanBoxAppScreen(viewModel: LanBoxViewModel = viewModel()) {
                             painter = painterResource(id = R.drawable.img),
                             contentDescription = "Header Logo",
                             modifier = Modifier
-                                .fillMaxWidth(0.9f)
+                                .fillMaxWidth(0.8f)
                                 .height(32.dp),
                             contentScale = ContentScale.Fit
                         )
@@ -105,6 +147,20 @@ fun LanBoxAppScreen(viewModel: LanBoxViewModel = viewModel()) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { openManual(context) }) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.MenuBook,
+                            contentDescription = "Open Manual",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    IconButton(onClick = { showLogDialog = true }) {
+                        Icon(
+                            Icons.Rounded.History,
+                            contentDescription = "Show Log",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     IconButton(onClick = { 
                         context.startActivity(Intent(context, CueListEditorActivity::class.java))
                     }) {
@@ -145,6 +201,11 @@ fun LanBoxAppScreen(viewModel: LanBoxViewModel = viewModel()) {
 
             // --- PLAYBACK CONTROLS ---
             PlaybackSection(viewModel)
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            // --- COPYRIGHT SECTION ---
+            CopyrightSection()
         }
     }
 
@@ -152,16 +213,100 @@ fun LanBoxAppScreen(viewModel: LanBoxViewModel = viewModel()) {
         SettingsDialog(
             ip = ipAddress,
             pass = password,
+            numLeds = numLeds,
+            startChannel = startChannel,
+            channelGap = channelGap,
+            customMapping = customMapping,
             onDismiss = { showSettingsDialog = false },
-            onSave = { newIp, newPass ->
+            onSave = { newIp, newPass, newNumLeds, newStartChannel, newChannelGap, newCustomMapping ->
                 sharedPrefs.edit {
                     putString("IP", newIp)
                     putString("PASS", newPass)
+                    putInt("NUM_LEDS", newNumLeds)
+                    putInt("START_CHANNEL", newStartChannel)
+                    putInt("CHANNEL_GAP", newChannelGap)
+                    putString("CUSTOM_MAPPING", newCustomMapping)
                 }
-                ipAddress = newIp
-                password = newPass
                 showSettingsDialog = false
             }
+        )
+    }
+
+    if (showLogDialog) {
+        LogDialog(
+            log = viewModel.commandLog,
+            onDismiss = { showLogDialog = false }
+        )
+    }
+}
+
+@Composable
+fun LogDialog(log: List<LogEntry>, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SurfaceGrey,
+        title = { Text("LanBox Interface Log", color = PrimaryGold) },
+        text = {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(400.dp)
+                    .background(Color.Black.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(log) { entry ->
+                    val color = when (entry.direction) {
+                        LogEntry.Direction.SENT -> PrimaryGold
+                        LogEntry.Direction.RECEIVED -> Color.Green
+                        LogEntry.Direction.ERROR -> Color.Red
+                    }
+                    val prefix = when (entry.direction) {
+                        LogEntry.Direction.SENT -> "TX >> "
+                        LogEntry.Direction.RECEIVED -> "RX << "
+                        LogEntry.Direction.ERROR -> "!! -- "
+                    }
+                    Column {
+                        Text(
+                            text = "${entry.timestamp} $prefix",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = color.copy(alpha = 0.7f)
+                        )
+                        Text(
+                            text = entry.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = color,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        HorizontalDivider(modifier = Modifier.padding(top = 4.dp), color = Color.White.copy(alpha = 0.05f))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
+}
+
+@Composable
+fun CopyrightSection() {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.logo_flowxperts_2026),
+            contentDescription = "Company Logo",
+            modifier = Modifier.height(40.dp),
+            contentScale = ContentScale.Fit
+        )
+        Text(
+            text = "(c) 2023-2026 flowxperts GmbH",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White.copy(alpha = 0.4f),
+            letterSpacing = 1.sp
         )
     }
 }
@@ -393,40 +538,110 @@ fun PlaybackBtn(icon: ImageVector, label: String, containerColor: Color, onClick
 }
 
 @Composable
-fun SettingsDialog(ip: String, pass: String, onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
+fun SettingsDialog(
+    ip: String, 
+    pass: String, 
+    numLeds: Int, 
+    startChannel: Int, 
+    channelGap: Int,
+    customMapping: String,
+    onDismiss: () -> Unit, 
+    onSave: (String, String, Int, Int, Int, String) -> Unit
+) {
     var tempIp by remember { mutableStateOf(ip) }
     var tempPass by remember { mutableStateOf(pass) }
+    var tempNumLeds by remember { mutableStateOf(numLeds.toString()) }
+    var tempStartChannel by remember { mutableStateOf(startChannel.toString()) }
+    var tempChannelGap by remember { mutableStateOf(channelGap.toString()) }
+    var tempCustomMapping by remember { mutableStateOf(customMapping) }
+    var isExpertMode by remember { mutableStateOf(customMapping.isNotEmpty()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = SurfaceGrey,
-        title = { Text(text = stringResource(R.string.settings_title), color = PrimaryGold) },
+        title = { Text(text = "App & Fixture Settings", color = PrimaryGold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("Network Settings", style = MaterialTheme.typography.labelLarge, color = PrimaryGold)
                 OutlinedTextField(
                     value = tempIp,
                     onValueChange = { tempIp = it },
                     label = { Text(text = stringResource(R.string.ip_address_label)) },
                     singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = PrimaryGold)
+                    shape = RoundedCornerShape(12.dp)
                 )
                 OutlinedTextField(
                     value = tempPass,
                     onValueChange = { tempPass = it },
                     label = { Text(text = stringResource(R.string.password_label)) },
                     singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = PrimaryGold)
+                    shape = RoundedCornerShape(12.dp)
                 )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.1f))
+                
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("Expert Mode (Custom Mapping)", style = MaterialTheme.typography.labelLarge, color = PrimaryGold, modifier = Modifier.weight(1f))
+                    Switch(checked = isExpertMode, onCheckedChange = { 
+                        isExpertMode = it
+                        if (!it) tempCustomMapping = ""
+                    })
+                }
+
+                if (!isExpertMode) {
+                    Text("Fixture Settings", style = MaterialTheme.typography.labelLarge, color = PrimaryGold)
+                    OutlinedTextField(
+                        value = tempNumLeds,
+                        onValueChange = { tempNumLeds = it },
+                        label = { Text("Number of LEDs (1-100)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    OutlinedTextField(
+                        value = tempStartChannel,
+                        onValueChange = { tempStartChannel = it },
+                        label = { Text("DMX Start Channel (1-512)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    OutlinedTextField(
+                        value = tempChannelGap,
+                        onValueChange = { tempChannelGap = it },
+                        label = { Text("Channel Gap (e.g. 1 for RGBW)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                } else {
+                    Text("Custom Address Mapping", style = MaterialTheme.typography.labelSmall, color = PrimaryGold)
+                    Text("Enter R,G,B addresses separated by commas. Each fixture on a new line.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    OutlinedTextField(
+                        value = tempCustomMapping,
+                        onValueChange = { tempCustomMapping = it },
+                        placeholder = { Text("1,2,3\n4,5,6\n...") },
+                        modifier = Modifier.fillMaxWidth().height(150.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onSave(tempIp, tempPass) },
+                onClick = { 
+                    onSave(
+                        tempIp, 
+                        tempPass, 
+                        tempNumLeds.toIntOrNull() ?: numLeds, 
+                        tempStartChannel.toIntOrNull() ?: startChannel,
+                        tempChannelGap.toIntOrNull() ?: channelGap,
+                        tempCustomMapping
+                    ) 
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = Color.Black)
             ) {
-                Text(text = stringResource(R.string.btn_save_reconnect))
+                Text(text = "Save All")
             }
         },
         dismissButton = {
